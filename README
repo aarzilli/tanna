@@ -1,0 +1,18 @@
+INTRODUCTION
+
+This is a script set aimed at converting plan9's bitmapped fonts from their format (the plan9 "font" and "subfont" formats) into a format usable by X11, freetype  (specifically the slightly obsolete pcf format) so that they will be usable outside of plan9 applications.
+This script set makes this assumptions:
+
+* you have plan9port installed into its default position, /usr/local/plan9 AND /usr/local/plan9/bin is in your path. The scripts will look for the /usr/local/plan9/font/ and call the toppm utility (yes, really)
+* you have a working perl5.10 installation (it probably works with perl5.8 too but I haven't tested it)
+* the bdftopcf command is available (I think it's installed by default in most distributions)
+
+The informations on how to make this were derived from plan9port manpages, specifically font(7), subfont(3), image(7), jpg(1) and cachechars(3) and Adobe's Glyph Bitmap Distribution Format (BDF) Specification version 2.2 (http://partners.adobe.com/public/developer/en/font/5005.BDF_Spec.pdf).
+
+I'm not going to publish the results of the conversion since that appears to be illegal for pelm and luc  (apparently some kind of variant of Lucida) which arguably are the only interesting ones given that everything else is readily available in other formats.
+
+USAGE
+
+perl tanna <path to plan9 font file>
+
+will create two files in the current directory font-name.bdf and font-name.pcf.gz. The script creates files in the /tmp directory therefore you can't run two instances simultaneously.

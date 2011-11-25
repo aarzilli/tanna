@@ -1,0 +1,355 @@
+#!/usr/bin/env perl
+use warnings;
+use strict;
+
+use File::Basename;
+use POSIX;
+use List::Util qw/min/;
+
+use constant COMPRESSED_HEADER => "compressed\n";
+use constant IMAGE_HEADER_LEN => 5 * 12;
+use constant BLOCK_HEADER_LEN => 2 * 12;
+use constant SUBFONT_HEADER_LEN => 3 * 12;
+
+use constant PRINTALOT => 0;
+
+my %hexnumbers = (
+	"0000" => "0",
+	"000" => "0",
+	"00" => "0",
+	"0" => "0",
+	"" => "0",
+	"0001" => "1",
+	"0010" => "2",
+	"001" => "2",
+	"0011" => "3",
+	"0100" => "4",
+	"010" => "4",
+	"01" => "4",
+	"0101" => "5",
+	"0110" => "6",
+	"011" => "6",
+	"0111" => "7",
+	"1000" => "8",
+	"100" => "8",
+	"10" => "8",
+	"1" => "8",
+	"1001" => "9",
+	"1010" => "A",
+	"101" => "A",
+	"1011" => "B",
+	"1100" => "C",
+	"110" => "C",
+	"11" => "C",
+	"1101" => "D",
+	"1110" => "E",
+	"111" => "E",
+	"1111" => "F",
+	);
+	
+
+sub readall {
+	my ($fh, $len) = @_;
+	my $remaining = $len;
+	my $r = "";
+	
+	while ($remaining > 0) {
+		my $c;
+		my $bytecount = read $fh, $c, $remaining;
+		last if ($bytecount == 0);
+		$r .= $c;
+		$remaining -= $bytecount;
+	}
+	
+	return $r;
+}
+
+sub trim {
+	local ($_) = @_;
+	s/^\s+//g;
+	s/\s+$//g;
+	s/\s+/ /g;
+	return $_;
+}
+
+sub find_subfont_info {
+	my ($subfont, $r_max_y) = @_;
+	
+	for (;;) {
+		my ($after_last_y, $size) = split /\s+/, trim(readall($subfont, BLOCK_HEADER_LEN));
+		print "\t\t\tAfter last y: $after_last_y ($r_max_y) size: $size\n" if PRINTALOT;
+		seek $subfont, $size, 1;
+		last if $after_last_y >= $r_max_y;
+	}
+}
+
+sub cnumparse {
+	local $_ = shift;
+	
+	if (/^0x/) {
+		return hex($_);
+	} elsif (/^0/) {
+		return oct($_);
+	} else {
+		return 0+$_;
+	}
+}
+
+sub readppm {
+	my ($filename) = @_;
+	
+	open my $in, '<', $filename or die "Couldn't open $filename: $!";
+	
+	chomp(my $header = <$in>);
+	if ($header ne "P1") {
+		print STDERR "Can only read P1 PPM files: $filename\n";
+		exit(1);
+	}
+	<$in>;
+	
+	my ($width, $height) = split / /, <$in>;
+	
+	my @pixels;
+	my $i = 0;
+	my $j = 0;
+	
+	local $_;
+	while (<$in>) {
+		chomp;
+		my @v = split /\s+/, $_;
+		for my $pixel (@v) {
+			$pixels[$i][$j] = $pixel;
+			#print "[$pixel]\n";
+			$j++;
+			if ($j >= $width) {
+				$i++;
+				$j = 0;
+			}
+		}
+	}
+	
+	close $in;
+	
+	return @pixels;
+}
+
+if (@ARGV != 1) {
+	print "Usage: tanna <plan9-font-file>\n";
+	exit(1);
+}
+
+my $fontfile = $ARGV[0];
+
+open my $font, '<', $fontfile or die "Couldn't open $fontfile: $!";
+
+print "Converting $fontfile\n" if PRINTALOT;
+
+chomp(my $font_header = <$font>);
+my ($font_height, $font_ascent) = split /\t/, $font_header;
+my $font_descent = $font_height - $font_ascent;
+my $font_bbwidth = 0;
+
+print "font_height: $font_height\nfont_ascent: $font_ascent\nfont_descent: $font_descent\n" if PRINTALOT;
+
+open my $out, ">", "/tmp/tanna-tmp-out" or die "Couldn't write to /tmp/tanna-tmp-out: $!";
+
+my $charnum = 0;
+
+FONT_LOOP:
+while (<$font>) {
+	chomp;
+	next if $_ eq '';
+	
+	my ($start_char, $end_char, $subfont_offset, $subfontfile_relative) = do {
+		my @v = split /\s+/, $_;
+		(@v == 3) ? ($v[0], $v[1], 0, $v[2]) : @v;
+	};
+	
+	$start_char = cnumparse($start_char);
+	$end_char = cnumparse($end_char);
+	$subfont_offset = cnumparse($subfont_offset);
+	
+	my $subfontfile = dirname($fontfile).'/'.$subfontfile_relative;
+	
+	print "Converting $subfontfile\n" unless PRINTALOT;
+	
+	print "\t$subfontfile ($start_char .. $end_char) offset: $subfont_offset\n" if PRINTALOT;
+	
+	system "toppm $subfontfile > /tmp/tannaconv";
+	
+	my @ppm = readppm("/tmp/tannaconv");
+	
+	print "\t\tHeight of ppm: ".(scalar @ppm)."\n" if PRINTALOT;
+
+	open my $subfont, '<', $subfontfile or die "Couldn't open subfont $subfontfile: $!";
+	
+	my $compression_check = readall($subfont, length(COMPRESSED_HEADER));
+	if ($compression_check ne COMPRESSED_HEADER) {
+		print STDERR "Can't convert non-compressed subfonts\n";
+		exit(1);
+	}
+	
+	my $image_header = readall($subfont, IMAGE_HEADER_LEN);
+	
+	print "\t\tImage Header: [" . $image_header . "] (" . length($image_header) . ")\n" if PRINTALOT;
+	my ($chan, $r_min_x, $r_min_y, $r_max_x, $r_max_y) = split /\s+/, trim($image_header);
+	print "\t\tchannel [$chan] r_min_x [$r_min_x] r_min_y [$r_min_y] r_max_x [$r_max_x] r_max_y [$r_max_y]\n" if PRINTALOT;
+	
+	find_subfont_info($subfont, $r_max_y);
+	
+	my $subfont_header = readall($subfont, SUBFONT_HEADER_LEN);
+	
+	print "\t\tSubfont Header: [" . $subfont_header . "]\n" if PRINTALOT;
+	
+	my ($n_chars, $subfont_height, $subfont_ascent) = split /\s+/, trim($subfont_header);
+	my $subfont_descent = $subfont_height - $subfont_ascent;
+	
+	my $row_start = 0;
+	my $row_end = $#ppm;
+	my $row_adjusted = 0;
+	
+	if ($font_ascent != $subfont_ascent) {
+		$row_start = $subfont_ascent - $font_ascent;
+		$row_adjusted += $row_start;
+	}
+	
+	if ($font_descent != $subfont_descent) {
+		$row_end -= ($subfont_descent - $font_descent);
+		$row_adjusted += ($subfont_descent - $font_descent);
+	}
+	
+	if (PRINTALOT) {
+		print "\t\tsubfont_height: $subfont_height subfont_ascent: $subfont_ascent subfont_descent: $subfont_descent\n" ;
+		
+		print "\t\trow_start: $row_start, row_end: $row_end";
+		print " (row_adjusted: $row_adjusted)" if $row_adjusted != 0;
+		print "\n";
+	}
+	
+	my $character = readall($subfont, 6);
+	my ($x, $top, $bottom, $left, $width) = unpack "vCCCC", $character;
+	
+	for my $i (1 .. $n_chars) {
+		my $character = readall($subfont, 6);
+		my ($next_x, $next_top, $next_bottom, $next_left, $next_width) = unpack "vCCCC", $character;
+		
+		if ($i >= $subfont_offset+1) {
+			my $char_number = ($start_char + $i - $subfont_offset - 1);
+			
+			my $rounded_image_width = ceil(($next_x - $x + 1) / 8) * 8;
+			
+			$font_bbwidth = $rounded_image_width if $rounded_image_width > $font_bbwidth;
+			
+			next FONT_LOOP if $char_number > $end_char;
+
+			print "\t\t\tCharacter $char_number ($start_char, $end_char)\n" if PRINTALOT;
+			
+			++$charnum;
+			printf $out "STARTCHAR U+%04X\n", $char_number;
+			printf $out "ENCODING %d\n", $char_number;
+			printf $out "SWIDTH %d 0\n", ($width/16) * 1000;
+			printf $out "DWIDTH %d 0\n", $width;
+			printf $out "BBX %d %d 0 %d\n", $rounded_image_width, $font_height, ($font_ascent - $font_height);
+			print $out "BITMAP\n";
+			
+			print "\t\t\tx: $x, top: $top, bottom: $bottom, left: $left, width: $width, rounded image width: $rounded_image_width\n" if PRINTALOT;
+			
+			my $right_pad = $rounded_image_width - ($next_x - $x);
+			
+			if (PRINTALOT) {
+				printf "\t\t\t    [";
+				for my $bitn (0 .. $rounded_image_width-1) {
+					print $bitn%10;
+				}
+				printf "]\n";
+			}
+	
+			for my $row_idx ($row_start .. $row_end) {
+				printf "\t\t\t%2d: [", $row_idx if PRINTALOT;
+				if (($row_idx < 0) || ($row_idx > $#ppm)) {
+					if (PRINTALOT) {
+						for (1 .. $rounded_image_width) {
+							print " ";
+						}
+					}
+					for (1 .. $rounded_image_width/4) {
+						print $out $hexnumbers{"0000"};
+					}
+				} else {
+					my $row  = $ppm[$row_idx];
+					if (PRINTALOT) {
+						for my $curx ($x .. $next_x-1) {
+							die "Not defined $curx" unless defined $$row[$curx];
+							print (($$row[$curx] eq '1') ? "X" : " ");
+						}
+						
+						for (1 .. $right_pad) {
+							print " ";
+						}
+					}
+					
+					for my $chunk (0 .. $rounded_image_width/4 - 1) {
+						if ($x+$chunk*4 < $next_x) {
+							my $zo = join('', @$row[$x+$chunk*4 .. min($x+($chunk+1)*4-1, $next_x-1)]);
+							#print $out "|$zo|";
+							print $out $hexnumbers{$zo};
+						} else {
+							#print $out "||";
+							print $out "0";
+						}
+					}
+				}
+				print "]\n" if PRINTALOT;
+				print $out "\n";
+				
+			}
+			
+			printf $out "ENDCHAR\n";
+		}
+			
+		($x, $top, $bottom, $left, $width) = ($next_x, $next_top, $next_bottom, $next_left, $next_width);
+	}
+	
+	close $subfont;
+}
+
+print $out "ENDFONT\n";
+
+close $font;
+close $out;
+
+# OUTPUT PHASE
+
+my $fontname = basename($fontfile);
+my $bdf_filename = "$fontname.bdf";
+
+open my $bdfout, '>', $bdf_filename or die "Couldn't open $bdf_filename: $!";
+
+print $bdfout "STARTFONT 2.1\n";
+print $bdfout "COMMENT Converted from $fontfile\n";
+print $bdfout "FONT $fontname\n";
+print $bdfout "SIZE 16 75 75\n";
+print $bdfout "FONTBOUNDINGBOX $font_bbwidth $font_height 0 -$font_descent\n";
+
+print $bdfout "STARTPROPERTIES 7\n";
+print $bdfout "PIXEL_SIZE 16\n";
+print $bdfout "POINT_SIZE 160\n";
+print $bdfout "FONT_ASCENT $font_ascent\n";
+print $bdfout "FONT_DESCENT $font_descent\n";
+print $bdfout "CHARSET_REGISTRY \"iso10646\"\n";
+print $bdfout "CHARSET_ENCODING 1\n";
+print $bdfout "DEFAULT_CHAR 32\n";
+print $bdfout "ENDPROPERTIES\n";
+
+print $bdfout "CHARS $charnum\n";
+
+close $bdfout;
+
+system "cat /tmp/tanna-tmp-out >> $bdf_filename";
+
+my $pcf_filename = $bdf_filename;
+$pcf_filename =~ s/\.bdf$/\.pcf.gz/g;
+
+print "Calling bdftopcf\n";
+
+system "bdftopcf $bdf_filename | gzip -c > $pcf_filename";
