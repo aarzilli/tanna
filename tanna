@@ -337,7 +337,7 @@ print $bdfout "POINT_SIZE 160\n";
 print $bdfout "FONT_ASCENT $font_ascent\n";
 print $bdfout "FONT_DESCENT $font_descent\n";
 print $bdfout "CHARSET_REGISTRY \"iso10646\"\n";
-print $bdfout "CHARSET_ENCODING 1\n";
+print $bdfout "CHARSET_ENCODING \"1\"\n";
 print $bdfout "DEFAULT_CHAR 32\n";
 print $bdfout "ENDPROPERTIES\n";
 
