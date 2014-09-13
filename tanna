@@ -218,6 +218,11 @@ while (<$font>) {
 		$row_adjusted += ($subfont_descent - $font_descent);
 	}
 	
+	if ($row_end - $row_start + 1 != $font_height) {
+		print "ERROR: mismatched heights: $font_height " . ($row_end - $row_start + 1) . " (skipping)\n";
+		next FONT_LOOP;
+	}
+
 	if (PRINTALOT) {
 		print "\t\tsubfont_height: $subfont_height subfont_ascent: $subfont_ascent subfont_descent: $subfont_descent\n" ;
 		
